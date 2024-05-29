@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Mini App</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <style>
+        body {
+            background-color: #000;
+        }
+
+        #canvas {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 1;
+            border: 3px #fff solid;
+            border-radius: 10px;
+        }
+
+        #video {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: -1;
+            border: 3px #fff solid;
+            border-radius: 10px;
+        }
+
+        #saveButton, #sendButton {
+            position: absolute;
+            top: 500px;
+            left: 10px;
+            z-index: 2;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        #sendButton {
+            left: 150px; /* Отступ, чтобы кнопки не перекрывались */
+        }
+    </style>
+</head>
+<body>
+    <video id="video" width="640px" height="480px"></video>
+    <button id="saveButton">Save Image</button>
+    <button id="sendButton">Send to Telegram</button>
+
+    <script>
+        let detections = {};
+        const videoElement = document.getElementById('video');
+        const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+
+        faceMesh.setOptions({
+            maxNumFaces: 2,
+            minDetectionConfidence: 0.8,
+            minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults((results) => {
+            detections = results;
+        });
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceMesh.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        camera.start();
+
+        let sketch = function(p){
+            let canvas;
+            let hatImg;
+            let saveButton, sendButton;
+            let telegramToken = 'YOUR_TELEGRAM_BOT_TOKEN'; // Замените на токен вашего Telegram бота
+            let chatId = 'YOUR_CHAT_ID'; // Замените на ваш чат ID
+
+            p.preload = function(){
+                hatImg = p.loadImage('hat.png');
+            }
+
+            p.setup = function(){
+                canvas = p.createCanvas(640, 480);
+                canvas.id("canvas");
+                p.colorMode(p.HSB);
+
+                p.stroke(255);
+                p.strokeWeight(3);
+
+                saveButton = p.select('#saveButton');
+                saveButton.mousePressed(p.saveImage);
+
+                sendButton = p.select('#sendButton');
+                sendButton.mousePressed(p.sendImage);
+
+                // Настроить видео поток
+                videoElement.width = p.width;
+                videoElement.height = p.height;
+                p.video = p.createCapture(p.VIDEO);
+                p.video.size(p.width, p.height);
+                p.video.hide();
+            }
+
+            p.draw = function(){
+                p.clear();
+                p.image(p.video, 0, 0, p.width, p.height); // Отрисовать видеопоток на холсте
+
+                if(detections && detections.multiFaceLandmarks && detections.multiFaceLandmarks.length > 0){
+                    p.faceMesh();
+                    p.drawHat();
+                }
+            }
+
+            p.faceMesh = function(){
+                p.beginShape(p.POINTS);
+                detections.multiFaceLandmarks[0].forEach(landmark => {
+                    let x = landmark.x * p.width;
+                    let y = landmark.y * p.height;
+                    p.vertex(x, y);
+                });
+                p.endShape();
+            }
+
+            p.drawHat = function(){
+                let leftForehead = detections.multiFaceLandmarks[0][151]; // Левая сторона лба
+                let rightForehead = detections.multiFaceLandmarks[0][338]; // Правая сторона лба
+                let topForehead = detections.multiFaceLandmarks[0][10]; // Верхняя часть лба
+                let leftEye = detections.multiFaceLandmarks[0][33]; // Левый глаз
+                let rightEye = detections.multiFaceLandmarks[0][263]; // Правый глаз
+
+                let foreheadWidth = p.dist(
+                    leftForehead.x * p.width, leftForehead.y * p.height,
+                    rightForehead.x * p.width, rightForehead.y * p.height
+                );
+
+                let hatWidth = foreheadWidth * 2.5; // Ширина шапки
+                let hatHeight = hatWidth * 1.2; // Высота шапки (соотношение сторон)
+
+                let x = topForehead.x * p.width - hatWidth / 2;
+                let y = topForehead.y * p.height - hatHeight * 1.0; // Положение шапки
+
+                let eyeAngle = p.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x);
+
+                p.push();
+                p.translate(x + hatWidth / 2, y + hatHeight / 2);
+                p.rotate(eyeAngle);
+                p.image(hatImg, -hatWidth / 2, -hatHeight / 2, hatWidth, hatHeight);
+                p.pop();
+            }
+
+            p.saveImage = function(){
+                p.saveCanvas(canvas, 'snapshot', 'png');
+            }
+
+            p.sendImage = function(){
+                let nativeCanvas = document.getElementById('canvas'); // Получить нативный HTMLCanvasElement
+                nativeCanvas.toBlob(function(blob) {
+                    let formData = new FormData();
+                    formData.append('chat_id', chatId);
+                    formData.append('photo', blob, 'snapshot.png');
+
+                    fetch(`https://api.telegram.org/bot${telegramToken}/sendPhoto`, {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log('Success:', data);
+                    })
+                    .catch((error) => {
+                        console.error('Error:', error);
+                    });
+                }, 'image/png');
+            }
+        }
+
+        let myp5 = new p5(sketch);
+    </script>
+</body>
+</html>
